@@ -39,7 +39,7 @@ class OperationAgentA2C(nn.Module):
         logits = logits - logits.max(dim=-1, keepdim=True)[0] 
         return logits
     
-
+#class A2CAgent:
 class OperationAgentPPO:
     def __init__(self, input_dim, action_dim, shared_critic,
                  lr=1e-4, gamma=0.99):
@@ -83,6 +83,7 @@ class OperationAgentPPO:
 
     def update(self, rewards, log_probs, states,
                critic_optimizer, critic_input_dim,entropy_op,actions,operation_action_mask,operation_action_state):
+        #1计算折扣奖励，与A2C一致
         rewards = torch.tensor(rewards, dtype=torch.float32)
         old_actions = torch.tensor(actions)
         old_logprobs = torch.stack(log_probs)
@@ -103,17 +104,17 @@ class OperationAgentPPO:
         total_value_loss = 0
 
 
-        
+
         for i in range(len(rewards)):
-            
+
             state = states[i]
             action = old_actions[i]
-            old_log_prob = old_logprobs[i]  
+            old_log_prob = old_logprobs[i] 
             reward = discounted_rewards[i]
 
 
-            
-            action_mask = operation_action_mask[i] 
+
+            action_mask = operation_action_mask[i]  
             action_state = operation_action_state[i]
             action_state = np.concatenate([action_state, action_mask])
             state_tensor = torch.tensor(action_state, dtype=torch.float32).unsqueeze(0)
@@ -122,50 +123,50 @@ class OperationAgentPPO:
             logits[~action_mask_tensor] = -1e15
             action_probs = torch.softmax(logits, dim=-1) 
             
-            
+
             processed_state = calculate_meta_statistics(state) 
             processed_state = processed_state.flatten()
             state_tensor = torch.tensor(processed_state, dtype=torch.float32).unsqueeze(0)
 
 
-            
+
             #action_probs = self.policy(state_tensor)
             dist = Categorical(action_probs)
             new_log_prob = dist.log_prob(action)
             entropy = dist.entropy()  
-            
+
             state_value = self.shared_critic(state_tensor)
 
-            
+
             advantage = discounted_rewards[i] - state_value.detach().item()
             
-            
+
             ratio = torch.exp(new_log_prob - old_log_prob.detach())
             surr1 = ratio * advantage
             surr2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * advantage
             policy_loss = -torch.min(surr1, surr2) - 0.1 * entropy.mean()
             total_policy_loss += policy_loss
 
-             
+
             value_loss = 0.5 * (state_value - discounted_rewards[i]) ** 2
             total_value_loss += value_loss
         
-        
+
         self.optimizer.zero_grad()
         total_policy_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
         self.optimizer.step()
 
-        
+
         critic_optimizer.zero_grad()
         total_value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.shared_critic.parameters(), max_norm=0.5)
         critic_optimizer.step()
-        
+
         #return total_policy_loss.item(), total_value_loss.item()
 
     def happo_step_iter(self, memory, adv, factor,
-                        clip_eps=None, ent_coef=0.1, max_grad_norm=0.5,Rv=0,Rd=0):
+                        clip_eps=None, ent_coef=0.1, max_grad_norm=0.5):
 
 
         info("update the Operation Agent")
@@ -175,12 +176,12 @@ class OperationAgentPPO:
         
 
         # ---------- DEBUG BLOCK BEGIN ----------
-        info("==== [DEBUG] happo_step_iter input snapshot for Operation Agent ====")
-        info(f"clip_eps={clip_eps}, ent_coef={ent_coef}, max_grad_norm={max_grad_norm}")
-        info(f"adv:    shape={tuple(adv.shape)}, dtype={adv.dtype}, requires_grad={adv.requires_grad}")
-        info(f"factor: shape={tuple(factor.shape)}, dtype={factor.dtype}, requires_grad={factor.requires_grad}")
-        info(f"len(obs)={len(memory.obs)}, len(actions)={len(memory.actions)}, "
-            f"len(logprobs)={len(memory.logprobs)}, len(mask)={len(memory.mask)}")
+        #info("==== [DEBUG] happo_step_iter input snapshot for Operation Agent ====")
+        #info(f"clip_eps={clip_eps}, ent_coef={ent_coef}, max_grad_norm={max_grad_norm}")
+        #info(f"adv:    shape={tuple(adv.shape)}, dtype={adv.dtype}, requires_grad={adv.requires_grad}")
+        #info(f"factor: shape={tuple(factor.shape)}, dtype={factor.dtype}, requires_grad={factor.requires_grad}")
+        #info(f"len(obs)={len(memory.obs)}, len(actions)={len(memory.actions)}, "
+        #    f"len(logprobs)={len(memory.logprobs)}, len(mask)={len(memory.mask)}")
 
         # Information retrieval from memory - similar to update method
         old_states = [torch.tensor(s, dtype=torch.float32) for s in memory.obs]
@@ -197,7 +198,6 @@ class OperationAgentPPO:
         info(f"Processing {len(old_states)} states from memory")
 
         for i in range(len(old_states)):
-            # Extract data for this timestep - similar to update method loop
             feature_data = old_states[i]
             action = old_actions[i]
             old_logprob = old_logprobs[i]
@@ -228,13 +228,12 @@ class OperationAgentPPO:
             total_loss += loss_t
 
             #ratios_det.append(ratio.detach())
-            ratios_det.append(ratio.detach().view(()))  # 明确变成标量 0-d tensor
+            ratios_det.append(ratio.detach().view(()))  
             #info(f"Step {i} - ratio: {ratio.item()}, loss_t: {loss_t.item()}")
 
         # Average over valid steps
         valid_steps = max(sum(mask), 1.0) if hasattr(memory, 'mask') else len(old_states)
-        total_loss = total_loss / valid_steps + Rd - Rv
-        #total_loss = total_loss / valid_steps
+        total_loss = total_loss / valid_steps
 
         info(f"Total loss before backward: {total_loss.item()}")
 

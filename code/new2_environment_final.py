@@ -1,4 +1,4 @@
-# new2_environment_final.py
+# environment.py
 
 import random
 import pandas as pd
@@ -36,6 +36,7 @@ class FeatureGenerationEnv:
         self.original_features = feature_df.columns.tolist() 
         self.feature_df = feature_df.copy()
         self.target = target_series
+        self.task_name = task_name
         self.current_features = self.original_features.copy()
         
         self.feature_df_test = feature_df_test.copy()
@@ -75,6 +76,15 @@ class FeatureGenerationEnv:
 
     def step(self, action_f1, action_f2=None, action_op=None):
         
+        """
+        Execute one step of the environment given the action choices.
+        Args:
+            action_f1 (int): Index of the first feature (in current_features).
+            action_f2 (int, optional): Index of the second feature. Defaults to None for unary operations.
+            action_op (int): Index of the selected operation in operation_list.
+        Returns:
+            (state, reward, metric, done): Next state, reward, metric (MSE or F1, etc.), and a boolean indicating if done.
+        """
         feature1 = self.current_features[action_f1] 
 
         O1 = ['sqrt', 'square', 'cos', 'sin', 'tanh', 
@@ -125,7 +135,7 @@ class FeatureGenerationEnv:
                 self.feature_df_test[f1] * self.feature_df_test[f2]
         elif operation == '/': 
             self.feature_df[new_feature_name] = \
-                self.feature_df[f1] / (self.feature_df[f2] + 1e-5) #Iono 2e-5
+                self.feature_df[f1] / (self.feature_df[f2] + 1e-5) 
             self.feature_df_test[new_feature_name] = \
                 self.feature_df_test[f1] / (self.feature_df_test[f2] + 1e-5) 
         #Unary Operations
@@ -178,7 +188,7 @@ class FeatureGenerationEnv:
                     np.log(self.feature_df_test[f1] + 1e-5)  
         elif operation == 'reciprocal':
             self.feature_df[new_feature_name] = \
-                1 / (self.feature_df[f1] + 1e-5)  # 2e-5 for Io，1e-5 
+                1 / (self.feature_df[f1] + 1e-5)  
             self.feature_df_test[new_feature_name] = \
                 1 / (self.feature_df_test[f1] + 1e-5)  
         elif operation == 'stand_scaler':
@@ -232,37 +242,23 @@ class FeatureGenerationEnv:
             f1_list = []
             cross_entropy_list = []
             skf = StratifiedKFold(n_splits=n_splits, random_state=0, shuffle=True)
-
-            all_class_labels = np.unique(y)
-            
             for train, test in skf.split(X, y):
                 X_train, y_train, X_test, y_test = X.iloc[train, :], y.iloc[train
                 ], X.iloc[test, :], y.iloc[test]
                 clf.fit(X_train, y_train)
                 y_predict = clf.predict(X_test)
                 y_proba = clf.predict_proba(X_test)
-                #f1_list.append(f1_score(y_test, y_predict, average='weighted'))
-                #cross_entropy_list.append(log_loss(y_test, y_proba)
-                #cross_entropy_list.append(log_loss(y_test, y_proba, labels=all_class_labels))
-                
-                labels = getattr(clf, "classes_", None)
-                if labels is None:
-                    labels = np.arange(y_proba.shape[1])
-
-                
-                mask = np.isin(y_test, labels)
-                if not np.any(mask):
-                    
-                    continue
-
-                y_test_eval  = y_test[mask]
-                y_pred_eval  = y_predict[mask]
-                y_proba_eval = y_proba[mask]
-
-                f1_list.append(f1_score(y_test_eval, y_pred_eval, average='weighted', zero_division=0))
-                cross_entropy_list.append(log_loss(y_test_eval, y_proba_eval, labels=labels))
-                
-
+                f1_list.append(f1_score(y_test, y_predict, average='weighted'))
+                try:
+                    cross_entropy_list.append(log_loss(y_test, y_proba))
+                except ValueError:
+                    if self.task_name != 'lymphography':
+                        raise
+                    labels = clf.classes_
+                    mask = np.isin(y_test, labels)
+                    if not np.any(mask):
+                        continue
+                    cross_entropy_list.append(log_loss(y_test[mask], y_proba[mask], labels=labels))
             
             return np.mean(f1_list), np.mean(cross_entropy_list)
         else:

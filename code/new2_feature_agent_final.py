@@ -103,6 +103,7 @@ class PPOAgent:
         op_emb = op_emb.unsqueeze(0)  
         state_op_emb = torch.cat((feature_data_tensor, op_emb),dim = 1) 
         feature_op_emb = self.feature_op_map(state_op_emb) 
+        #feature_data_op = feature_data + feature_op_emb.unsqueeze(0)  
         action_probs = self.policy(feature_data) 
         #action_probs = self.policy(feature_data_op) 
         dist = Categorical(action_probs)
@@ -200,30 +201,35 @@ class PPOAgent:
         return total_policy_loss.item(), total_value_loss.item()
 
 
+
+
     def happo_step_iter(self, memory, adv, factor,
-                        clip_eps=None, ent_coef=0.1, max_grad_norm=0.5,Rv=0,Rd=0):
+                        clip_eps=None, ent_coef=0.1, max_grad_norm=0.5):
         if self.select == 'tail':
             info("currently update the tail agent, for debug reason")
         else:
             info("currently update the head agent, for debug reason")
         
-        '''
+        #info(f"check the initial_factor returned {factor}")
+
         info("==== [DEBUG] happo_step_iter input snapshot for feature Agent ====")
         info(f"clip_eps={clip_eps}, ent_coef={ent_coef}, max_grad_norm={max_grad_norm}")
         info(f"adv:    shape={tuple(adv.shape)}, dtype={adv.dtype}, requires_grad={adv.requires_grad}")
         info(f"factor: shape={tuple(factor.shape)}, dtype={factor.dtype}, requires_grad={factor.requires_grad}")
         info(f"len(obs)={len(memory.obs)}, len(actions)={len(memory.actions)}, "
             f"len(logprobs)={len(memory.logprobs)}, len(mask)={len(memory.mask)}")
-        '''
+
+
         eps_clip = self.eps_clip
         if clip_eps is None: clip_eps = self.eps_clip
         device = next(self.policy.parameters()).device
 
+        # Information retrieval from memory - similar to update method
         old_states = [torch.tensor(s, dtype=torch.float32) for s in memory.obs]
         old_actions = torch.tensor(memory.actions)
         old_logprobs = torch.stack(memory.logprobs)
         
-        mask = memory.mask  
+        mask = memory.mask  # assuming mask is stored in memory
 
         total_loss = torch.zeros(1, device=device)
 
@@ -234,39 +240,57 @@ class PPOAgent:
         info(f"Processing {len(old_states)} states from memory")
 
         for i in range(len(old_states)):
+            # Extract data for this timestep - similar to update method loop
             feature_data = old_states[i]
             action = old_actions[i]
             old_logprob = old_logprobs[i]
+            
             #info(f"Step {i} - feature_data shape: {feature_data.shape}")
             #info(f"Step {i} - action: {action}")
+
+            # Ensure proper batch dimension
             feature_data = feature_data.unsqueeze(0)
+
+            # Policy forward pass
             action_probs = self.policy(feature_data)
             dist = Categorical(action_probs)
             logprob = dist.log_prob(action)
             entropy = dist.entropy()
+
+            # Get advantage and factor for this timestep
             adv_t = adv[i].to(device)
             f_t = factor[i].to(device)
+            
             info(f"Step {i} - adv_t: {adv_t}, f_t: {f_t}")
+
+            # PPO loss calculation
             ratio = torch.exp(logprob - old_logprob.detach())
             s1 = f_t * ratio * adv_t
             s2 = f_t * torch.clamp(ratio, 1-clip_eps, 1+clip_eps) * adv_t
             loss_t = -(torch.min(s1, s2)) - ent_coef * entropy
             total_loss += loss_t
 
-            ratios_det.append(ratio.detach().view(()))  
+            #ratios_det.append(ratio.detach())
+            ratios_det.append(ratio.detach().view(()))  # 明确变成标量 0-d tensor
 
             info(f"Step {i} - ratio: {ratio.item()}, loss_t: {loss_t.item()}")
 
+        # Average over valid steps
         valid_steps = max(sum(mask), 1.0) if hasattr(memory, 'mask') else len(old_states)
-        total_loss =  total_loss / valid_steps + Rd - Rv
-        #total_loss =  total_loss / valid_steps
+        total_loss = total_loss / valid_steps
 
         info(f"Total loss before backward: {total_loss.item()}")
+
+        # Backward pass and optimization
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
         self.optimizer.step()
 
+        # Update factor (element-wise)
         with torch.no_grad():
+            #info(f"check the ratios {ratio}")
+            #info(f"check the ratios_det {ratios_det}")
+            #ratios_det = torch.stack(ratios_det, dim=0).to(factor.device)
             ratios_det = torch.stack(ratios_det, dim=0).to(factor.device).view(-1)
             if hasattr(memory, 'mask'):
                 #mask_t = torch.tensor(mask, dtype=torch.float32, device=factor.device)
@@ -274,5 +298,6 @@ class PPOAgent:
                 new_factor = factor * ratios_det * mask_t + factor * (1 - mask_t)
             else:
                 new_factor = factor * ratios_det
+
 
         return total_loss.item(), new_factor
